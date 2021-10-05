@@ -29,6 +29,8 @@ type Product struct {
 	ProductType        string             `xml:"ProductType"`
 	FundsProductCode   string             `xml:"FundsProductCode"`
 	ProductStatus      string             `xml:"ProductStatus"`
+	State              string             `xml:"State"`
+	Scale              string             `xml:"Scale"`
 	Corporate          Corporate          `xml:"Corporate"`
 	ProductAmbulance   ProductAmbulance   `xml:"ProductAmbulance"`
 	GeneralHealthCover GeneralHealthCover `xml:"GeneralHealthCover"`
@@ -175,10 +177,10 @@ func main() {
 	var combinedProducts Products
 	xml.Unmarshal(combinedBytes, &combinedProducts)
 
-	// Filter out corporate products
+	// Filter out invalid products
 	n := 0
 	for _, product := range hospitalProducts.Products {
-		if !product.Corporate.IsCorporate {
+		if !product.Corporate.IsCorporate && product.IsValidScale() {
 			hospitalProducts.Products[n] = product
 			n++
 		}
@@ -187,7 +189,7 @@ func main() {
 
 	n = 0
 	for _, product := range extrasProducts.Products {
-		if !product.Corporate.IsCorporate {
+		if !product.Corporate.IsCorporate && product.IsValidScale() {
 			extrasProducts.Products[n] = product
 			n++
 		}
@@ -196,12 +198,44 @@ func main() {
 
 	n = 0
 	for _, product := range combinedProducts.Products {
-		if !product.Corporate.IsCorporate {
+		if !product.Corporate.IsCorporate && product.IsValidScale() {
 			combinedProducts.Products[n] = product
 			n++
 		}
 	}
 	combinedProducts.Products = combinedProducts.Products[:n]
+
+	// Reduce collection of policies by grouping by Name + FundCode + ProductGroupCode
+	var reducedHospitalProducts Products
+	var hospitalProductsMap map[string]bool = make(map[string]bool)
+	for _, hospitalProduct := range hospitalProducts.Products {
+		key := hospitalProduct.FundCode + "_" + hospitalProduct.ProductGroupCode + "_" + hospitalProduct.Name
+		_, exists := hospitalProductsMap[key]
+		if !exists {
+			hospitalProductsMap[key] = true
+			reducedHospitalProducts.Products = append(reducedHospitalProducts.Products, hospitalProduct)
+		}
+	}
+	var reducedExtrasProducts Products
+	var extrasProductsMap map[string]bool = make(map[string]bool)
+	for _, extrasProduct := range extrasProducts.Products {
+		key := extrasProduct.FundCode + "_" + extrasProduct.ProductGroupCode + "_" + extrasProduct.Name
+		_, exists := extrasProductsMap[key]
+		if !exists {
+			extrasProductsMap[key] = true
+			reducedExtrasProducts.Products = append(reducedExtrasProducts.Products, extrasProduct)
+		}
+	}
+	var reducedCombinedProducts Products
+	var combinedProductsMap map[string]bool = make(map[string]bool)
+	for _, combinedProduct := range combinedProducts.Products {
+		key := combinedProduct.FundCode + "_" + combinedProduct.ProductGroupCode + "_" + combinedProduct.Name
+		_, exists := combinedProductsMap[key]
+		if !exists {
+			combinedProductsMap[key] = true
+			reducedCombinedProducts.Products = append(reducedCombinedProducts.Products, combinedProduct)
+		}
+	}
 
 	// Build custom combinations (warning, not optimised)
 	var customCombinedProducts Products
@@ -210,58 +244,91 @@ func main() {
 			if extrasProduct.IsAmbulanceOnly() {
 				continue
 			}
+			if !IsSameState(hospitalProduct, extrasProduct) {
+				continue
+			}
+			if hospitalProduct.Scale != extrasProduct.Scale {
+				continue
+			}
 			if extrasProduct.FundItemID == hospitalProduct.FundItemID {
-				var customCombinedProduct Product
-				customCombinedProduct.Name = hospitalProduct.Name + " + " + extrasProduct.Name
-				customCombinedProduct.ProductType = "CustomCombined"
-				customCombinedProducts.Products = append(customCombinedProducts.Products, customCombinedProduct)
+				var product Product
+				product.FundCode = hospitalProduct.FundCode + "+" + extrasProduct.FundCode
+				product.ProductGroupCode = hospitalProduct.ProductGroupCode + "+" + extrasProduct.ProductGroupCode
+				product.Name = hospitalProduct.Name + "+" + extrasProduct.Name
+				customCombinedProducts.Products = append(customCombinedProducts.Products, product)
 			}
 		}
 	}
 
-	fmt.Println("Custom Combined: " + strconv.Itoa(len(customCombinedProducts.Products)))
-	fmt.Println("Hospital: " + strconv.Itoa(len(hospitalProducts.Products)))
-	fmt.Println("Extras: " + strconv.Itoa(len(extrasProducts.Products)))
-	fmt.Println("Combined: " + strconv.Itoa(len(combinedProducts.Products)))
-
-	// Insert into DB
-	fundsStmt, err := db.Prepare("INSERT INTO funds(FundItemID, FundID, Status, FundCode, FundName, FundType) VALUES (?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		panic(err)
-	}
-
-	productsStmt, err := db.Prepare("INSERT INTO products(ProductItemID, ProductID, ProductCode, FundItemID, Status, FundCode, ProductGroupCode, Name, ProductType, FundsProductCode, ProductStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		panic(err)
-	}
-
-	for _, fund := range funds.Funds {
-		_, err = fundsStmt.Exec(fund.FundItemID, fund.FundID, fund.Status, fund.FundCode, fund.FundName, fund.FundType)
-		if err != nil {
-			panic(err)
+	var reducedCustomCombinedProducts Products
+	var customCombinedProductsMap map[string]bool = make(map[string]bool)
+	for _, combinedProduct := range customCombinedProducts.Products {
+		key := combinedProduct.FundCode + "_" + combinedProduct.ProductGroupCode + "_" + combinedProduct.Name
+		_, exists := customCombinedProductsMap[key]
+		if !exists {
+			customCombinedProductsMap[key] = true
+			reducedCustomCombinedProducts.Products = append(reducedCustomCombinedProducts.Products, combinedProduct)
 		}
 	}
 
-	for _, product := range hospitalProducts.Products {
-		_, err = productsStmt.Exec(product.ProductItemID, product.ProductID, product.ProductCode, product.FundItemID, product.Status, product.FundCode, product.ProductGroupCode, product.Name, product.ProductType, product.FundsProductCode, product.ProductStatus)
-		if err != nil {
-			panic(err)
+	// Determine which extras policies are ambulance only
+	var ambulanceProducts Products
+	for _, extrasProduct := range reducedExtrasProducts.Products {
+		if extrasProduct.IsAmbulanceOnly() {
+			ambulanceProducts.Products = append(ambulanceProducts.Products, extrasProduct)
 		}
 	}
 
-	for _, product := range extrasProducts.Products {
-		_, err = productsStmt.Exec(product.ProductItemID, product.ProductID, product.ProductCode, product.FundItemID, product.Status, product.FundCode, product.ProductGroupCode, product.Name, product.ProductType, product.FundsProductCode, product.ProductStatus)
-		if err != nil {
-			panic(err)
-		}
-	}
+	fmt.Println("Hospital Products: " + strconv.Itoa(len(reducedHospitalProducts.Products)))
+	fmt.Println("Extras Products: " + strconv.Itoa(len(reducedExtrasProducts.Products)))
+	fmt.Println("Combined Products: " + strconv.Itoa(len(reducedCombinedProducts.Products)))
+	fmt.Println("Hospital Variants: " + strconv.Itoa(len(hospitalProducts.Products)))
+	fmt.Println("Extras Variants: " + strconv.Itoa(len(extrasProducts.Products)))
+	fmt.Println("Combined Variants: " + strconv.Itoa(len(combinedProducts.Products)))
 
-	for _, product := range combinedProducts.Products {
-		_, err = productsStmt.Exec(product.ProductItemID, product.ProductID, product.ProductCode, product.FundItemID, product.Status, product.FundCode, product.ProductGroupCode, product.Name, product.ProductType, product.FundsProductCode, product.ProductStatus)
-		if err != nil {
-			panic(err)
-		}
-	}
+	fmt.Println("Custom Combined Products: " + strconv.Itoa(len(customCombinedProducts.Products)))
+	fmt.Println("Custom Combined Variants: " + strconv.Itoa(len(reducedCustomCombinedProducts.Products)))
+
+	fmt.Println("Ambulance Only: " + strconv.Itoa(len(ambulanceProducts.Products)))
+
+	// // Insert into DB
+	// fundsStmt, err := db.Prepare("INSERT INTO funds(FundItemID, FundID, Status, FundCode, FundName, FundType) VALUES (?, ?, ?, ?, ?, ?)")
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// productsStmt, err := db.Prepare("INSERT INTO products(ProductItemID, ProductID, ProductCode, FundItemID, Status, FundCode, ProductGroupCode, Name, ProductType, FundsProductCode, ProductStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// for _, fund := range funds.Funds {
+	// 	_, err = fundsStmt.Exec(fund.FundItemID, fund.FundID, fund.Status, fund.FundCode, fund.FundName, fund.FundType)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+
+	// for _, product := range hospitalProducts.Products {
+	// 	_, err = productsStmt.Exec(product.ProductItemID, product.ProductID, product.ProductCode, product.FundItemID, product.Status, product.FundCode, product.ProductGroupCode, product.Name, product.ProductType, product.FundsProductCode, product.ProductStatus)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+
+	// for _, product := range extrasProducts.Products {
+	// 	_, err = productsStmt.Exec(product.ProductItemID, product.ProductID, product.ProductCode, product.FundItemID, product.Status, product.FundCode, product.ProductGroupCode, product.Name, product.ProductType, product.FundsProductCode, product.ProductStatus)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+
+	// for _, product := range combinedProducts.Products {
+	// 	_, err = productsStmt.Exec(product.ProductItemID, product.ProductID, product.ProductCode, product.FundItemID, product.Status, product.FundCode, product.ProductGroupCode, product.Name, product.ProductType, product.FundsProductCode, product.ProductStatus)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
 
 	// for _, product := range customCombinedProducts.Products {
 	// 	_, err = productsStmt.Exec(product.ProductItemID, product.ProductID, product.ProductCode, product.FundItemID, product.Status, product.FundCode, product.ProductGroupCode, product.Name, product.ProductType, product.FundsProductCode, product.ProductStatus)
@@ -269,6 +336,14 @@ func main() {
 	// 		panic(err)
 	// 	}
 	// }
+}
+
+func IsSameState(a Product, b Product) bool {
+	if a.State == "ALL" || b.State == "ALL" {
+		return true
+	}
+
+	return a.State == b.State
 }
 
 func (product Product) IsAmbulanceOnly() bool {
@@ -285,4 +360,8 @@ func (product Product) IsAmbulanceOnly() bool {
 	}
 
 	return true
+}
+
+func (product Product) IsValidScale() bool {
+	return product.Scale != "ChildrenOnly" && product.Scale != "ExtendedFamily" && product.Scale != "SingleAnyDependants" && product.Scale != "CoupleAnyDependants"
 }
