@@ -57,8 +57,8 @@ type GeneralHealthServices struct {
 }
 
 type GeneralHealthService struct {
-	Type    string `xml:"Title"`
-	Covered bool   `xml:"Covered"`
+	Type    string `xml:"Title,attr"`
+	Covered bool   `xml:"Covered,attr"`
 }
 
 // Fund XML types
@@ -348,7 +348,7 @@ func IsSameState(a Product, b Product) bool {
 
 func (product Product) IsAmbulanceOnly() bool {
 	// If no ambulance coverage, not ambulance only
-	if product.ProductAmbulance.Ambulance.Cover != "None" {
+	if product.ProductAmbulance.Ambulance.Cover == "None" {
 		return false
 	}
 
