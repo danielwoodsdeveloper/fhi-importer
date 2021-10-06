@@ -34,6 +34,7 @@ type Product struct {
 	Corporate          Corporate          `xml:"Corporate"`
 	ProductAmbulance   ProductAmbulance   `xml:"ProductAmbulance"`
 	GeneralHealthCover GeneralHealthCover `xml:"GeneralHealthCover"`
+	HospitalCover 	   HospitalCover      `xml:"HospitalCover"`
 }
 
 type Corporate struct {
@@ -56,9 +57,22 @@ type GeneralHealthServices struct {
 	GeneralHealthServices []GeneralHealthService `xml:"GeneralHealthService"`
 }
 
+type HospitalCover struct {
+	MedicalServices MedicalServices `xml:"MedicalServices"`
+}
+
+type MedicalServices struct {
+	MedicalServices []MedicalService `xml:"MedicalService"`
+}
+
 type GeneralHealthService struct {
 	Type    string `xml:"Title,attr"`
 	Covered bool   `xml:"Covered,attr"`
+}
+
+type MedicalService struct {
+	Type  string `xml:"Title,attr"`
+	Cover string `xml:"Cover,attr"`
 }
 
 // Fund XML types
@@ -272,10 +286,26 @@ func main() {
 	}
 
 	// Determine which extras policies are ambulance only
-	var ambulanceProducts Products
+	var ambulanceExtrasProducts Products
 	for _, extrasProduct := range reducedExtrasProducts.Products {
 		if extrasProduct.IsAmbulanceOnly() {
-			ambulanceProducts.Products = append(ambulanceProducts.Products, extrasProduct)
+			ambulanceExtrasProducts.Products = append(ambulanceExtrasProducts.Products, extrasProduct)
+		}
+	}
+
+	// Determine which hospital policies are ambulance only
+	var ambulanceHospitalProducts Products
+	for _, hospitalProduct := range reducedHospitalProducts.Products {
+		if hospitalProduct.IsAmbulanceOnly() {
+			ambulanceHospitalProducts.Products = append(ambulanceHospitalProducts.Products, hospitalProduct)
+		}
+	}
+
+	// Determine which combined policies are ambulance only
+	var ambulanceCombinedProducts Products
+	for _, combinedProduct := range reducedCombinedProducts.Products {
+		if combinedProduct.IsAmbulanceOnly() {
+			ambulanceCombinedProducts.Products = append(ambulanceCombinedProducts.Products, combinedProduct)
 		}
 	}
 
@@ -289,7 +319,9 @@ func main() {
 	fmt.Println("Custom Combined Products: " + strconv.Itoa(len(customCombinedProducts.Products)))
 	fmt.Println("Custom Combined Variants: " + strconv.Itoa(len(reducedCustomCombinedProducts.Products)))
 
-	fmt.Println("Ambulance Only: " + strconv.Itoa(len(ambulanceProducts.Products)))
+	fmt.Println("Ambulance Only (Hospital): " + strconv.Itoa(len(ambulanceHospitalProducts.Products)))
+	fmt.Println("Ambulance Only (Extras): " + strconv.Itoa(len(ambulanceExtrasProducts.Products)))
+	fmt.Println("Ambulance Only (Combined): " + strconv.Itoa(len(ambulanceCombinedProducts.Products)))
 
 	// // Insert into DB
 	// fundsStmt, err := db.Prepare("INSERT INTO funds(FundItemID, FundID, Status, FundCode, FundName, FundType) VALUES (?, ?, ?, ?, ?, ?)")
@@ -355,6 +387,13 @@ func (product Product) IsAmbulanceOnly() bool {
 	// If has a health service, not ambulance only
 	for _, service := range product.GeneralHealthCover.GeneralHealthServices.GeneralHealthServices {
 		if service.Covered {
+			return false
+		}
+	}
+
+	// If has a medical service, not ambulance only
+	for _, service := range product.HospitalCover.MedicalServices.MedicalServices {
+		if service.Cover != "NotCovered" {
 			return false
 		}
 	}
